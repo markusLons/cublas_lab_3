@@ -1,12 +1,10 @@
-#include "cublas_v2.h"
+#include "/opt/nvidia/hpc_sdk/Linux_x86_64/21.11/math_libs/11.5/targets/x86_64-linux/include/cublas_v2.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-
 #define n 1024
 
 int main() {
-    // Allocate memory for variables
     double *buf;
     cublasHandle_t handle;
     cublasCreate(&handle);
@@ -25,79 +23,84 @@ int main() {
     u[n * (n - 1) + 1] = up[n * (n - 1) + 1] = y1;
     u[n * n] = up[n * n] = y2;
 
-    // Move data to device (accelerator)
 #pragma acc enter data create(u[0:n*n], up[0:n*n]) copyin(n, step1)
 #pragma acc kernels
     {
-        // Initialize boundary conditions
 #pragma acc loop independent
         for (int i = 0; i < n; i++) {
             u[i*n] = up[i*n] = x1 + i * step1;
             u[i] = up[i] = x1 + i * step1;
             u[(n - 1) * n + i] = up[(n - 1) * n + i] = y1 + i * step1;
-            u[i * n + (n - 1)] = up[i * n + (n - 1)] = x2 + i * step1;
-        }
+            u[i * n + (n - 1)] = up[i * n + (n - 1)] = x2 + i * step1;        }
     }
 
     int itter = 0;
     double error = 1.0;
-    // Perform iterations until convergence
-    while (itter < 1000000 && error > 1e-6) {
-        itter++;
-        // Every 100 iterations or the first iteration, calculate error
-        if (itter % 100 == 0 || itter == 1) {
-            // Perform Jacobi iteration on device
+    {
+        while (itter < 1000000 && error > 1e-6) {
+            itter++;
+            if (itter % 100 == 0 || itter == 1) {
 #pragma acc data present(u[0:n*n], up[0:n*n])
 #pragma acc kernels async(1)
-            {
+                {
 #pragma acc loop independent collapse(2)
-                for (int i = 1; i < n - 1; i++) {
-                    for (int j = 1; j < n - 1; j++) {
-                        up[i * n + j] =
-                                0.25 * (u[(i + 1) * n + j] + u[(i - 1) * n + j] + u[i * n + j - 1] + u[i * n + j + 1]);
+                    for (int i = 1; i < n - 1; i++) {
+                        for (int j = 1; j < n - 1; j++) {
+                            up[i * n + j] =
+                                    0.25 * (u[(i + 1) * n + j] + u[(i - 1) * n + j] + u[i * n + j - 1] + u[i * n + j + 1]);
+                        }
                     }
                 }
-            }
-            int id = 0;
+                int id = 0;
 #pragma acc wait
-            // Calculate error and update u
 #pragma acc host_data use_device(u, up)
-            {
-                cublasDaxpy(handle, n * n, &alpha, up, 1, u, 1);
-                cublasIdamax(handle, n * n, u, 1, &id);
-            }
-#pragma acc update self(u[id-1:1])
+                {
+                    cublasDaxpy(handle, n * n, &alpha, up, 1, u, 1);
+                    cublasIdamax(handle, n * n, u, 1, &id);
 
+                }
+//используется для копирования данных с устройства на хост.
+// В данном случае, u - это указатель на массив значений,
+// и u[id-1:1] используется для обращения к элементу массива u с индексом id-1 и длиной 1.
 #pragma acc update self(u[id-1:1])
-            error = fabs(u[id - 1]);
+                error = fabs(u[id - 1]);
+                //указывает компилятору, что данные u и up, которые находятся на устройстве,
+                // должны быть переданы на хост (центральный процессор), чтобы выполнить операцию копирования.
 #pragma acc host_data use_device(u, up)
-            cublasDcopy(handle, n * n, up, 1, u, 1);
+// копирует содержимое массива up в массив u
+                cublasDcopy(handle, n * n, up, 1, u, 1);
 
-        } else {
+            } else {
+                //гарантирует, что массивы u и up находятся на устройстве (GPU) и
+                // доступны для использования в кэше устройства.
 #pragma acc data present(u[0:n*n], up[0:n*n])
+//запускает вычисления на устройстве. Внутри блока находится двойной цикл for, который обходит внутренние
+// узлы сетки, применяя метод Якоби для вычисления новых значений up на основе текущих значений u.
 #pragma acc kernels async(1)
-            {
+                {
+                    // распараллеливает вложенный цикл for и указывает компилятору, что итерации этого
+                    // цикла могут быть выполнены независимо друг от друга в разных потоках.
 #pragma acc loop independent collapse(2)
-                for (int i = 1; i < n - 1; i++) {
-                    for (int j = 1; j < n - 1; j++) {
-                        up[i * n + j] =
-                                0.25 * (u[(i + 1) * n + j] + u[(i - 1) * n + j] + u[i * n + j - 1] + u[i * n + j + 1]);
+                    for (int i = 1; i < n - 1; i++) {
+                        for (int j = 1; j < n - 1; j++) {
+                            up[i * n + j] =
+                                    0.25 * (u[(i + 1) * n + j] + u[(i - 1) * n + j] + u[i * n + j - 1] + u[i * n + j + 1]);
+                        }
                     }
                 }
             }
-        }
-        buf = u;
-        u = up;
-        up = buf;
+            buf = u;
+            u = up;
+            up = buf;
 
-        if (itter % 100 == 0 || itter == 1)
+            if (itter % 100 == 0 || itter == 1)
 #pragma acc wait(1)
-            printf("%d %e\n", itter, error);
+                printf("%d %e\n", itter, error);
 
+        }
     }
-
-printf("%d\n", itter);
-printf("%e", error);
-cublasDestroy(handle);
-return 0;
+    printf("%d\n", itter);
+    printf("%e", error);
+    cublasDestroy(handle);
+    return 0;
 }
